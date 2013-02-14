@@ -76,7 +76,7 @@ module MRuby
         @git = Command::Git.new(self)
         @mrbc = Command::Mrbc.new(self)
 
-        @bins = %w(mruby mrbc mirb)
+        @bins = %w(mruby mrbc mirb mrb)
         @gems, @libmruby = [], []
         @build_mrbtest_lib_only = false
 
