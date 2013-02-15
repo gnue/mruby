@@ -7,6 +7,7 @@
 #include "mruby/variable.h"
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #ifndef ENABLE_STDIO
 static void
@@ -22,6 +23,7 @@ p(mrb_state *mrb, mrb_value obj)
 
 void mrb_show_version(mrb_state *);
 void mrb_show_copyright(mrb_state *);
+int mirb(mrb_state *);
 
 struct _args {
   FILE *rfp;
@@ -247,6 +249,17 @@ main(int argc, char **argv)
     cleanup(mrb, &args);
     usage(argv[0]);
     return n;
+  }
+
+  if (args.rfp == stdin) {
+    struct stat st;
+
+    fstat(fileno(stdin), &st);
+    if (! S_ISFIFO(st.st_mode) && st.st_size == 0) {
+      n = mirb(mrb);
+      cleanup(mrb, &args);
+      return n;
+    }
   }
 
   ARGV = mrb_ary_new_capa(mrb, args.argc);
