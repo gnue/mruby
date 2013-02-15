@@ -7,6 +7,7 @@
 #include "mruby/variable.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 #include <sys/stat.h>
 
 #ifndef ENABLE_STDIO
@@ -21,12 +22,28 @@ p(mrb_state *mrb, mrb_value obj)
 #define p(mrb,obj) mrb_p(mrb,obj)
 #endif
 
+#define RITEBIN_EXT ".mrb"
+#define C_EXT       ".c"
 void mrb_show_version(mrb_state *);
 void mrb_show_copyright(mrb_state *);
+void parser_dump(mrb_state*, struct mrb_ast_node*, int);
+void codedump_all(mrb_state*, int);
+void mrb_init_libs(mrb_state*);
+mrb_state* mrb_open0();
 int mirb(mrb_state *);
+
+typedef enum {
+  kErrNoFunctionName   = -2,
+  kErrUnkownLongOption = -3,
+  kErrUnkownOption     = -4
+} args_err_t;
 
 struct _args {
   FILE *rfp;
+  FILE *wfp;
+  char *filename;
+  char *initname;
+  char *ext;
   char* cmdline;
   int fname        : 1;
   int mrbfile      : 1;
@@ -44,6 +61,9 @@ usage(const char *name)
   "-b           load and execute RiteBinary (mrb) file",
   "-c           check syntax only",
   "-e 'command' one line of script",
+  "-O           compile",
+  "-o<outfile>  place the output into <outfile>",
+  "-B<symbol>   binary <symbol> output in C language format",
   "-v           print version number, then run in verbose mode",
   "--verbose    run in verbose mode",
   "--version    print the version",
@@ -57,13 +77,35 @@ usage(const char *name)
   printf("  %s\n", *p++);
 }
 
+static char *
+get_outfilename(char *infile, char *ext)
+{
+  char *outfile;
+  char *p;
+
+  outfile = (char*)malloc(strlen(infile) + strlen(ext) + 1);
+  strcpy(outfile, infile);
+  if (*ext) {
+    if ((p = strrchr(outfile, '.')) == NULL)
+      p = &outfile[strlen(outfile)];
+    strcpy(p, ext);
+  }
+
+  return outfile;
+}
+
 static int
 parse_args(mrb_state *mrb, int argc, char **argv, struct _args *args)
 {
+  bool output = false;
+  char *infile = NULL;
+  char *outfile = NULL;
   char **origargv = argv;
+  int result = 0;
   static const struct _args args_zero = { 0 };
 
   *args = args_zero;
+  args->ext = RITEBIN_EXT;
 
   for (argc--,argv++; argc > 0; argc--,argv++) {
     char *item;
@@ -71,6 +113,7 @@ parse_args(mrb_state *mrb, int argc, char **argv, struct _args *args)
 
     if (strlen(*argv) <= 1) {
       argc--; argv++;
+      args->filename = infile = "-";
       args->rfp = stdin;
       break;
     }
@@ -106,13 +149,30 @@ append_cmdline:
       }
       else {
         printf("%s: No code specified for -e\n", *origargv);
-        return 0;
+        goto exit;
       }
       break;
     case 'v':
       mrb_show_version(mrb);
       args->verbose = 1;
       break;
+    // compile options
+    case 'O':
+      output = true;
+      break;
+    case 'o':
+      outfile = get_outfilename((*argv) + 2, "");
+      break;
+    case 'B':
+      args->ext = C_EXT;
+      args->initname = (*argv) + 2;
+      if (*args->initname == '\0') {
+        printf("%s: Function name is not specified.\n", *origargv);
+        result = kErrNoFunctionName;
+        goto exit;
+      }
+      break;
+    // long options
     case '-':
       if (strcmp((*argv) + 2, "version") == 0) {
         mrb_show_version(mrb);
@@ -126,20 +186,28 @@ append_cmdline:
         mrb_show_copyright(mrb);
         exit(0);
       }
-      else return -3;
-      return 0;
+      else {
+        result = kErrUnkownLongOption;
+        goto exit;
+      }
+      goto exit;
     default:
-      return -4;
+      result = kErrUnkownOption;
+      goto exit;
     }
   }
 
   if (args->rfp == NULL && args->cmdline == NULL) {
-    if (*argv == NULL) args->rfp = stdin;
+    if (*argv == NULL) {
+      args->filename = infile = "-";
+      args->rfp = stdin;
+    }
     else {
+      args->filename = infile = *argv;
       args->rfp = fopen(argv[0], args->mrbfile ? "rb" : "r");
       if (args->rfp == NULL) {
         printf("%s: Cannot open program file. (%s)\n", *origargv, *argv);
-        return 0;
+        goto exit;
       }
       args->fname = 1;
       args->cmdline = argv[0];
@@ -150,6 +218,29 @@ append_cmdline:
   memcpy(args->argv, argv, (argc+1) * sizeof(char*));
   args->argc = argc;
 
+  if (!args->check_syntax) {
+    if (output && outfile == NULL) {
+      if (infile == NULL) {
+        if (output) outfile = infile = "-";
+      } else if (strcmp("-", infile) == 0) {
+        outfile = infile;
+      }
+      else {
+        outfile = get_outfilename(infile, args->ext);
+      }
+    }
+    if (outfile == NULL) goto exit;
+    if (strcmp("-", outfile) == 0) {
+      args->wfp = stdout;
+    }
+    else if ((args->wfp = fopen(outfile, "wb")) == NULL) {
+      printf("%s: Cannot open output file. (%s)\n", *origargv, outfile);
+      result = -1;
+      goto exit;
+    }
+  }
+ exit:
+  if (outfile && infile != outfile) free(outfile);
   return 0;
 }
 
@@ -158,6 +249,8 @@ cleanup(mrb_state *mrb, struct _args *args)
 {
   if (args->rfp && args->rfp != stdin)
     fclose(args->rfp);
+  if (args->wfp)
+    fclose(args->wfp);
   if (args->cmdline && !args->fname)
     mrb_free(mrb, args->cmdline);
   if (args->argv)
@@ -233,7 +326,7 @@ showcallinfo(mrb_state *mrb)
 int
 main(int argc, char **argv)
 {
-  mrb_state *mrb = mrb_open();
+  mrb_state *mrb = mrb_open0();
   int n = -1;
   int i;
   struct _args args;
@@ -251,7 +344,10 @@ main(int argc, char **argv)
     return n;
   }
 
-  if (args.rfp == stdin) {
+  if (args.wfp == NULL)
+     mrb_init_libs(mrb);
+
+  if (args.wfp == NULL && args.rfp == stdin) {
     struct stat st;
 
     fstat(fileno(stdin), &st);
@@ -291,6 +387,8 @@ main(int argc, char **argv)
       c->dump_result = 1;
     if (args.check_syntax)
       c->no_exec = 1;
+    if (args.wfp)
+      c->no_exec = 1;
 
     if (args.rfp) {
       mrbc_filename(mrb, c, args.cmdline ? args.cmdline : "-");
@@ -299,6 +397,18 @@ main(int argc, char **argv)
     else {
       mrbc_filename(mrb, c, "-e");
       v = mrb_load_string_cxt(mrb, args.cmdline, c);
+    }
+    if (args.wfp && ! args.check_syntax) {
+      if (mrb_undef_p(v) || mrb_fixnum(v) < 0) {
+        cleanup(mrb, &args);
+        return EXIT_FAILURE;
+      }
+      if (args.initname) {
+        n = mrb_bdump_irep(mrb, n, args.wfp, args.initname);
+      }
+      else {
+        n = mrb_dump_irep(mrb, n, args.wfp);
+      }
     }
     mrbc_context_free(mrb, c);
     if (mrb->exc) {
