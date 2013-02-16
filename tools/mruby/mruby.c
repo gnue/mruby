@@ -127,6 +127,7 @@ parse_args(mrb_state *mrb, int argc, char **argv, struct _args *args)
       args->check_syntax = 1;
       break;
     case 'e':
+      args->filename = "-e";
       if (item[0]) {
         goto append_cmdline;
       }
@@ -210,7 +211,6 @@ append_cmdline:
         goto exit;
       }
       args->fname = 1;
-      args->cmdline = argv[0];
       argc--; argv++;
     }
   }
@@ -390,12 +390,11 @@ main(int argc, char **argv)
     if (args.wfp)
       c->no_exec = 1;
 
+    mrbc_filename(mrb, c, args.filename);
     if (args.rfp) {
-      mrbc_filename(mrb, c, args.cmdline ? args.cmdline : "-");
       v = mrb_load_file_cxt(mrb, args.rfp, c);
     }
     else {
-      mrbc_filename(mrb, c, "-e");
       v = mrb_load_string_cxt(mrb, args.cmdline, c);
     }
     if (args.wfp && ! args.check_syntax) {
