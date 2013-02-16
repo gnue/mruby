@@ -220,7 +220,7 @@ append_cmdline:
 
   if (!args->check_syntax) {
     if (output && outfile == NULL) {
-      if (infile == NULL) {
+      if (infile == NULL || args->cmdline) {
         if (output) outfile = infile = "-";
       } else if (strcmp("-", infile) == 0) {
         outfile = infile;
